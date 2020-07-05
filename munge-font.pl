@@ -11,7 +11,7 @@ while (<>) {
     my $char = 32+int($.-1)/7;
     my $row = ($.-1) % 7;
     my $safechar = chr($char);
-    $safechar =~ s/([^!#-^(-\][-~])/\\$1/gsm;
+    $safechar =~ s/([^ !#-^(-\][-~])/\\$1/gsm;
     $safechar = "\'$safechar\'";
     if ($row==0) {
         my $flaginfo = "";
@@ -24,7 +24,7 @@ while (<>) {
           $char, $safechar, $flaginfo;
     }
     printf "        db \%08bb            ;\%04x \%02x\n",
-      $val, 0x560+$., $val;
+      $val, 0x8560+$., $val;
     if ($row==6) {
         print "\n";
     }
