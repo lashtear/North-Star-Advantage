@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+use Data::Dumper;
 
 sub read_rom {
     my ($filename) = @_;
@@ -233,12 +234,14 @@ my %simple_insn =
     ));
 
 sub disassemble_insn {
-    my ($rom, $addr, $out, $label) = @_;
+    my ($rom, $addr, $out, $label, $reach) = @_;
     my $byte = substr $$rom, $$addr, 1;
     my $bits = unpack "B8", $byte;
 
     my $insn = sprintf("db 0%02xh", ord $byte);
-    my $comment = sprintf("; %04x %02x", $$addr, ord $byte);
+    my $safebyte = $byte;
+    $safebyte =~ s{[^ -~]}{.}g;
+    my $comment = sprintf("; %04x %02x '%c'", $$addr, ord $byte, ord $safebyte);
     my $startaddr = $$addr;
 
     if ($bits eq '11111111') {
@@ -250,6 +253,7 @@ sub disassemble_insn {
             $$addr += length $1;
         } else {
             $insn = "mov a, r7";
+            $reach->{$$addr}{$$addr+1} = 1;
             ++($$addr);
         }
     } elsif (exists $simple_insn{$bits}) {
@@ -259,16 +263,22 @@ sub disassemble_insn {
         if ($insn =~ /=/) {
             $byte = substr($$rom, $$addr, 1);
             if ($insn =~ /^(djnz|j)/) {
-                my $targetaddr = ($$addr & 0xff00) | ord($byte);
-                my $target = sprintf("l%04xh", $targetaddr);
-                $insn =~ s{=}{$target}eg;
-                $label->{$targetaddr} = $target;
+                my $targetaddr = ($$addr & 0x0700) | ord($byte);
+                $label->{$targetaddr} ||= sprintf("l%04xh", $targetaddr);
+                $insn =~ s{=}{$label->{$targetaddr}}eg;
+                $reach->{$$addr-1}{$targetaddr} = 1;
             } else {
                 die unless $insn =~ /#/; # assert that it's immediate
                 $insn =~ s{=}{sprintf ("0%02xh", ord $byte)}eg;
             }
-            $comment .= sprintf(" %02x", ord $byte);
             ++($$addr);
+            my $safebyte = $byte;
+            $safebyte =~ s{[^ -~]}{.}g;
+            $comment .= sprintf(" %02x '%c'", ord $byte, ord $safebyte);
+            $reach->{$$addr-2}{$$addr} = 1;
+            $reach->{$$addr-1}{$$addr} = 1;
+        } else {
+            $reach->{$$addr-1}{$$addr} = 1;
         }
     } elsif ($bits =~ /^(...)(.)0100$/) { 
         ++($$addr);
@@ -277,35 +287,66 @@ sub disassemble_insn {
         my $targetaddr = ord(pack("B8", "00000$1"))*256 + ord(pack("B8", $bits));
         my $target = sprintf("l%04xh", $targetaddr);
         $insn = sprintf ("%s %s", ($2 eq '1' ? 'call' : 'jmp'), $target);
-        $label->{$targetaddr} = $target;
-        $comment .= sprintf(" %02x", ord $byte);
-        ++($$addr);
-    } else {
+        $label->{$targetaddr} ||= $target;
         my $safebyte = $byte;
-        $safebyte =~ s/[^!-~]/./;
-        $comment .= sprintf(" %8s '%c'", $bits, ord $safebyte);
+        $safebyte =~ s{[^ -~]}{.}g;
+        $comment .= sprintf(" %02x '%c'", ord $byte, ord $safebyte);
+        ++($$addr);
+        $reach->{$$addr-2}{$targetaddr} = 1;
+        if ($insn =~ /^call/) {
+            $reach->{$$addr-2}{$$addr} = 1;
+        }
+        $reach->{$$addr-1}{$$addr} = 1;
+    } else {
+#        my $safebyte = $byte;
+#        $safebyte =~ s/[^!-~]/./;
+#        $comment .= sprintf(" %8s '%c'", $bits, ord $safebyte);
         ++($$addr);
     }
     $insn =~ s/^(\w+)\s/$1 . ' 'x(5-length($1)) /e;
-    push @{$out->{$startaddr}}, sprintf("\t%-20s%s", $insn, $comment);
+    push @{$out->{$startaddr}}, sprintf("        %-20s%s", $insn, $comment);
 }
 
 my $rom = read_rom(@ARGV);
 my $addr = 0;
-my (%out, %label);
+my %out;
+my %label =
+  (qw(
+         0 resetvec
+         3 intvec
+         7 timervec
+    ));
+my %reach;
+
 while ($addr < length($rom)) {
-    disassemble_insn(\$rom, \$addr, \%out, \%label);
+    disassemble_insn(\$rom, \$addr, \%out, \%label, \%reach);
 }
+
+my %reachable;
+my @reachstack = (0, 3, 7);
+while (scalar @reachstack) {
+    my $addr = pop @reachstack;
+    if (not $reachable{$addr}) {
+        $reachable{$addr} = 1;
+        push @reachstack, keys %{$reach{$addr}};
+    }
+}
+
 for (sort {$a<=>$b} keys %label) {
     unshift @{$out{$_}}, "$label{$_}:";
     if (scalar @{$out{$_}} == 1) {
-        $out{$_} = [sprintf ("%s: equ  0%04xh         ; probably bad target", $label{$_}, $_)];
+        $out{$_} = [sprintf ("%s: equ  0%04xh         ; bad target", $label{$_}, $_)];
     }
 }
-push @{$out{$addr}}, sprintf "\t%-20s; %04x\n", 'end', $addr;
+push @{$out{$addr}}, sprintf "        %-20s; %04x\n", 'end', $addr;
 
 for (sort {$a<=>$b} keys %out) {
     for my $line (@{$out{$_}}) {
-        print "$line\n";
+        if (not $reachable{$_}) {
+            chomp $line;
+            printf "%-50s ; unreachable\n", $line;
+        } else {
+            print "$line\n";
+        }
     }
 }
