@@ -44,6 +44,28 @@ sub emit_asm_char {
     print $out "\n";
 }
 
+sub emit_bitmap {
+    my ($out, $data) = @_;
+    binmode $out;
+    printf $out "P4 %d %d\n", 16*8, 6*9;
+    my @bm;
+    for my $char (0..94) {
+        my $chardata = substr $data, 7*$char, 7;
+        my $first = ord substr $chardata, 0, 1;
+        my $y_offset = 0 + (($first & 0x80) > 0) + (($first & 0x40) > 0);
+        printf "%08b %d\n", $first, $y_offset;
+        my $char_offset = $char % 16 + 16*9*($char >> 4);
+        $char_offset += 16 * $y_offset;;
+        $bm[$char_offset] = $first & 0x3f;
+        for (unpack "C6", substr $chardata, 1) {
+            $char_offset += 16;
+            $bm[$char_offset] = $_;
+        }
+    }
+    @bm = map {$_ ||= 0} @bm;
+    print $out pack ("C864", @bm);
+}
+
 my $data = get_data();
 open my $out, '>', 'Advantage Boot Font.asm'
   or die "open: output: $!\n";
@@ -51,4 +73,7 @@ for (0..94) {
     emit_asm_char($out, $_, $data);
 }
 close $out;
-
+open my $pbm, '>', 'Advantage Boot Font.pbm'
+  or die "open: pbm: $!\n";
+emit_bitmap ($pbm, $data);
+close $pbm;
