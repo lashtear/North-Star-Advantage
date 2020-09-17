@@ -19,49 +19,11 @@ gthxhi:  equ     000fch         ;00fc-00ff gethex conversion buffer
 gthxlo:  equ     000feh         ;00fc-00ff gethex conversion buffer
 
 mvctemp: equ     002f0h         ;02f0 cursor template
-unk2:    equ     002fdh         ;02fd see load at 08088h ?
+serialfound:equ  002fdh         ;02fd set when serial card in slot 3
 mmdaddr: equ     002feh         ;02fe minimon dump address reg
 lastkey: equ     003ffh         ;03ff last key pressed (for repeat)
 
-;see table 3-6 on page 3-9
-ldioctl: equ     0f8h           ; same as 0f0h, a0-a3 ignored
-rdst1:   equ     0e0h
-rdst2:   equ     0d0h
-
-;see table 3-4 on page 3-6
-memparity: equ    060h
-
-;see table 3-2 on page 3-4 and 3-3 on 3-5
-memmap0:  equ     0a0h
-memmap1:  equ     0a1h
-memmap2:  equ     0a2h
-memmap3:  equ     0a3h
-
-;see 3-12 on 3-26
-ldstsc:   equ     090h          ; load start scan reg
-clrdsf:   equ     0b0h          ; clear display flag
-
-;see 3-15 on 3-31,3-32
-flpdata:  equ     080h          ; floppy data
-flpctl:   equ     081h          ; sync input / drive control
-flpdskrd: equ     082h          ; clear/set disk read flag
-flpwrt:   equ     083h          ; floppy write flag (write)
-flpbeep:  equ     083h          ; beep (same addr)
-
-;see 3-20 on 3-52
-idslt3:   equ     073h          ; read slot 3 ID byte
-
-;see 3-24 on 3-57
-siodata:  equ     030h          ; slot 3 serial io data
-sioctl:   equ     031h          ; slot 3 serial io control
-siobaud:  equ     038h          ; slot 3 serial io baud rate select
-sioim:    equ     03ah          ; slot 3 serial io interrupt mask
-                                ;   (not used in rom)
-
-;see B-8
-clearnmi: equ     0c0h          ; clear nmi state
-
-
+include "advio.asm"
 
         org      08000h
 
@@ -98,7 +60,7 @@ warmstart:
 postreloc:
         di                      ;8021   f3      .
 resetloop:
-        ; send 00101000: showsector !acquire reset blank !spkr !displayint
+        ; send 00101000: reset blank
         ld a,028h               ;8022   3e 28   > (
         out (ldioctl),a         ;8024   d3 f8   . .
         xor a                   ;8026   af      .
@@ -108,7 +70,7 @@ l8027h:
         dec a                   ;802a   3d      =
         jr nz,l8027h            ;802b   20 fa     .
         ld bc,00fa0h            ;802d   01 a0 0f        . . .
-        ; send 00111111: compallcaps !acquire !reset blank !spkr !displayint
+        ; send 00111111: compallcaps blank
         ld a,03fh               ;8030   3e 3f   > ?
         out (ldioctl),a         ;8032   d3 f8   . .
 waitnmi:
@@ -126,22 +88,39 @@ interruptvec:
 strloadsystem:
         dm "LOAD SYSTEM"
         db 01fh
-l804fh:
-        add a,b                 ;804f   80      .
-        add a,b                 ;8050   80      .
-        ld b,b                  ;8051   40      @
-        inc c                   ;8052   0c      .
-        djnz setlowmaps         ;8053   10 16   . .
-        or a                    ;8055   b7      .
-        djnz $+24               ;8056   10 16   . .
-        dec b                   ;8058   05      .
-        rst 38h                 ;8059   ff      .
-        djnz l8072h             ;805a   10 16   . .
-        inc b                   ;805c   04      .
-        ld bc,0ff05h            ;805d   01 05 ff        . . .
+        ;;  this is serial pre-amble sent via otir
+sertable:
+        ;;  see 8251 2-13 fig 12, reset, mode 0c
+        ;; hunt, hunt, reset
+        db 080h                 ;804f   80
+        db 080h                 ;8050   80
+        db 040h                 ;8051   40
+
+sertable2:
+        ;; mode xsync|bits8, odd but no parity, 2char sync, syndet out
+        db 00ch                 ;8052   0c
+        db 010h                 ;8053   10 SYN sync char 1
+        db 016h                 ;8054   16 DLE sync char 2
+        ;; b7 as ctrl is hunt|rts|er|rxe|dtr|txe
+        db 0b7h                 ;8055   b7
+
+sertable3:
+        ;; data for boot program request
+        db 010h                 ;8056   10 SYN
+        db 016h                 ;8057   16 DLE
+        db 005h                 ;8058   05 ENQ
+        db 0ffh                 ;8059   ff PAD
+        db 010h                 ;805a   10 SYN
+        db 016h                 ;805b   16 DLE
+        db 004h                 ;805c   04 EOT
+        db 001h                 ;805d   01 NUM (1 for adv)
+        db 005h                 ;805e   05 ENQ
+        db 0ffh                 ;805f   ff PAD
+
         nop                     ;8060   00      .
         nop                     ;8061   00      .
         nop                     ;8062   00      .
+
         nop                     ;8063   00      .
         nop                     ;8064   00      .
         nop                     ;8065   00      .
@@ -165,26 +144,42 @@ l8072h:
         out (ldstsc),a          ;807a   d3 90   . .
         out (clrdsf),a          ;807c   d3 b0   . .
 
-        ; send 00011000: showsector !acquire !reset !blank !spkr !displayint
+        ; send 00011000: (normal)
         ld a,018h               ;807e   3e 18   > .
         out (ldioctl),a         ;8080   d3 f8   . .
 
-        ; store slot3 sio id flag in 02fdh ?
+;;; examine slot 3's board id tag
+;;; sio boards return F7
+;;; if, instead, it is E8-EF, then set 002fdh to zero
+;;; this enables minimon serial control via slot 3 at 9600 8N2 (yes 2!)
+;;;
+;;; so, from poweron, wait for LOAD SYSTEM
+;;; hit ctrl-C to get into minimon
+;;; J808D (which does the serial init as if it's an E8 style debug board)
+;;; hit ctrl-C again
+;;; D02FD00
+;;; and now you can remotely control the minimon, for loading/dumping, etc
+;;; bulk writes will need delay steps as it's polled and can't keep up
+;;; especially if you go to 19200 via O7F38
         in a,(idslt3)           ;8082   db 73   . s
         and 0f8h                ;8084   e6 f8   . .
         sub 0e8h                ;8086   d6 e8   . .
-        ld (unk2),a             ;8088   32 fd 02        2 . .
+        ld (serialfound),a      ;8088   32 fd 02        2 . .
 
-        jr nz,l809eh            ;808b   20 11     .
+        jr nz,printloadsystem   ;808b   20 11     .
+        ;; reset serial, set baud to 9600
         ld a,07eh               ;808d   3e 7e   > ~
-        call sub_8274h          ;808f   cd 74 82        . t .
+        call serialinit         ;808f   cd 74 82        . t .
+        ;; mode ce is x16|bits8| no parity | stop2
         ld a,0ceh               ;8092   3e ce   > .
         out (sioctl),a          ;8094   d3 31   . 1
+        ;; control 37 is rts|er|rxe|dtr|txe
         ld a,037h               ;8096   3e 37   > 7
         out (sioctl),a          ;8098   d3 31   . 1
+        ;; clear 8251 poweron gubbish
         in a,(siodata)          ;809a   db 30   . 0
         in a,(siodata)          ;809c   db 30   . 0
-l809eh:
+printloadsystem:
         ld hl,strloadsystem     ;809e   21 43 80        ! C .
         ld c,00ch               ;80a1   0e 0c   . .
 printlsloop:
@@ -227,51 +222,65 @@ l80dch:
         exx                     ;80dc   d9      .
         ld c,a                  ;80dd   4f      O
         exx                     ;80de   d9      .
+        ;; Start drive motors!
         ld a,01dh               ;80df   3e 1d   > .
         out (ldioctl),a         ;80e1   d3 f8   . .
         ; clear parity errors, disable parity interrupt
         ld a,002h               ;80e3   3e 02   > .
         out (memparity),a       ;80e5   d3 60   . `
+
+        ;; try seeking inward up to ten tracks ?
         ld b,00ah               ;80e7   06 0a   . .
-l80e9h:
+step_inward:
+        ;; step toward inner, side 0
         ld a,0a0h               ;80e9   3e a0   > .
-        call sub_818fh          ;80eb   cd 8f 81        . . .
+        call step_track_arm     ;80eb   cd 8f 81        . . .
+        ;; check for track0
         in a,(rdst1)            ;80ee   db e0   . .
         and 020h                ;80f0   e6 20   .
         jr z,l80f7h             ;80f2   28 03   ( .
-        djnz l80e9h             ;80f4   10 f3   . .
+        djnz step_inward        ;80f4   10 f3   . .
+        ;; didn't find track0 ??
         ret                     ;80f6   c9      .
+        ;; found track0...
+        ;; try stepping outward 100 tracks
 l80f7h:
         ld b,064h               ;80f7   06 64   . d
 l80f9h:
+        ;; step toward outer, side 0
         ld a,080h               ;80f9   3e 80   > .
-        call sub_818fh          ;80fb   cd 8f 81        . . .
+        call step_track_arm     ;80fb   cd 8f 81        . . .
         in a,(rdst1)            ;80fe   db e0   . .
         and 020h                ;8100   e6 20   .
         jr nz,l8107h            ;8102   20 03     .
         djnz l80f9h             ;8104   10 f3   . .
+        ;; didn't find track0...
         ret                     ;8106   c9      .
+        ;; found track0...
 l8107h:
         ld b,004h               ;8107   06 04   . .
-l8109h:
+separator_reset_loop:
+        ;; power on initialization of floppy data separator
+        ;; cf. sec 3.7.1 on 3-34.
         out (flpdskrd),a        ;8109   d3 82   . .
         ld a,07dh               ;810b   3e 7d   > }
-        call sub_819eh          ;810d   cd 9e 81        . . .
+        call delay              ;810d   cd 9e 81        . . .
         in a,(flpdskrd)         ;8110   db 82   . .
         ld a,07dh               ;8112   3e 7d   > }
-        call sub_819eh          ;8114   cd 9e 81        . . .
-        djnz l8109h             ;8117   10 f0   . .
+        call delay              ;8114   cd 9e 81        . . .
+        djnz separator_reset_loop ;8117   10 f0   . .
         exx                     ;8119   d9      .
         ld b,028h               ;811a   06 28   . (
         exx                     ;811c   d9      .
 l811dh:
-        ld hl,floppycrcreadl    ;811d   21 4e 81        ! N .
+        ld hl,read_boot_sector  ;811d   21 4e 81        ! N .
         in a,(flpdskrd)         ;8120   db 82   . .
         exx                     ;8122   d9      .
         dec b                   ;8123   05      .
         exx                     ;8124   d9      .
         ret z                   ;8125   c8      .
         ld b,020h               ;8126   06 20   .
+        ;; find sector loop
 l8128h:
         dec bc                  ;8128   0b      .
         ld a,b                  ;8129   78      x
@@ -286,39 +295,50 @@ l8134h:
         ld a,b                  ;8135   78      x
         or c                    ;8136   b1      .
         ret z                   ;8137   c8      .
-        in a,(rdst1)             ;8138   db e0   . .
+        in a,(rdst1)            ;8138   db e0   . .
         and 040h                ;813a   e6 40   . @
         jr nz,l8134h            ;813c   20 f6     .
-        in a,(rdst2)             ;813e   db d0   . .
+        ;; read sector number, looking for 3 (so there is time for 4)
+        in a,(rdst2)            ;813e   db d0   . .
         and 00fh                ;8140   e6 0f   . .
         cp 003h                 ;8142   fe 03   . .
         jr nz,l8128h            ;8144   20 e2     .
         ld a,004h               ;8146   3e 04   > .
         ld e,000h               ;8148   1e 00   . .
         ld b,0ffh               ;814a   06 ff   . .
-        jr l81a7h               ;814c   18 59   . Y
+        jr find_next_sector               ;814c   18 59   . Y
 
-
-floppycrcreadl:
-        ; see 3-81
+        ;; return vector in HL
+        ;; count of sectors in b?
+read_boot_sector:
+        ;; see 3-81
+        ;; get first byte (load addr page)
         in a,(flpdata)          ;814e   db 80   . .
+        ;; ensure it is 0c0h - 0f8h
         cp 0c0h                 ;8150   fe c0   . .
         ret c                   ;8152   d8      .
         cp 0f9h                 ;8153   fe f9   . .
         ret nc                  ;8155   d0      .
+        ;; set DE to destination buffer addr
         ld d,a                  ;8156   57      W
-        ld (de),a                       ;8157   12      .
+        ;; write first byte
+        ld (de),a               ;8157   12      .
         inc de                  ;8158   13      .
+        ;; load c with crc
         rlca                    ;8159   07      .
         ld c,a                  ;815a   4f      O
-        ld hl,l8165h            ;815b   21 65 81        ! e .
-        in a,(flpdata)             ;815e   db 80   . .
-        ld (de),a                       ;8160   12      .
+
+        ld hl,bloop             ;815b   21 65 81        ! e .
+        ;; get and store next byte
+        in a,(flpdata)          ;815e   db 80   . .
+        ld (de),a               ;8160   12      .
         inc de                  ;8161   13      .
+        ;; update crc
         xor c                   ;8162   a9      .
         rlca                    ;8163   07      .
         ld c,a                  ;8164   4f      O
-l8165h:
+	;; get and store two bytes, updating crc
+bloop:
         in a,(flpdata)          ;8165   db 80   . .
         ld (de),a               ;8167   12      .
         xor c                   ;8168   a9      .
@@ -331,25 +351,36 @@ l8165h:
         rlca                    ;8170   07      .
         ld c,a                  ;8171   4f      O
         inc de                  ;8172   13      .
-        djnz l8165h             ;8173   10 f0   . .
+        djnz bloop              ;8173   10 f0   . .
+        ;; read crc byte
         in a,(flpdata)          ;8175   db 80   . .
         xor c                   ;8177   a9      .
+	;; stop reading
         in a,(flpdskrd)         ;8178   db 82   . .
         jr nz,l811dh            ;817a   20 a1     .
 
-
-        ex af,af'                       ;817c   08      .
+        ex af,af'               ;817c   08      .
         dec a                   ;817d   3d      =
-        jr nz,l81a7h            ;817e   20 27     '
+        jr nz,find_next_sector            ;817e   20 27     '
+        ;; load HL with entry point??
         ld hl,0f80ah            ;8180   21 0a f8        ! . .
-        add hl,de                       ;8183   19      .
-        out (memmap0),a            ;8184   d3 a0   . .
-        out (memmap1),a            ;8186   d3 a1   . .
-        ld a,(hl)                       ;8188   7e      ~
+        ;; adjust with ??
+        add hl,de               ;8183   19      .
+        out (memmap0),a         ;8184   d3 a0   . .
+        out (memmap1),a         ;8186   d3 a1   . .
+        ;; verify it's a jump instruction
+        ld a,(hl)               ;8188   7e      ~
         cp 0c3h                 ;8189   fe c3   . .
-        jp nz,setlowmaps            ;818b   c2 6b 80        . k .
-        jp (hl)                         ;818e   e9      .
-sub_818fh:
+        ;; bail out if it isn't
+        jp nz,setlowmaps        ;818b   c2 6b 80        . k .
+        ;; jump into it if it is
+        jp (hl)                 ;818e   e9      .
+
+        ;; command in A; see table 3-16 on 3-33
+        ;; 040h 0=side0, 1=side1
+        ;; 020h 0=outward, 1=inward
+        ;; drive select in C'?
+step_track_arm:
         exx                     ;818f   d9      .
         or c                    ;8190   b1      .
         exx                     ;8191   d9      .
@@ -359,52 +390,70 @@ sub_818fh:
         xor 010h                ;8198   ee 10   . .
         out (flpctl),a          ;819a   d3 81   . .
         ld a,028h               ;819c   3e 28   > (
-sub_819eh:
+
+delay:
         ld c,0fah               ;819e   0e fa   . .
-l81a0h:
+delayinner:
         dec c                   ;81a0   0d      .
-        jr nz,l81a0h            ;81a1   20 fd     .
+        jr nz,delayinner        ;81a1   20 fd     .
         dec a                   ;81a3   3d      =
-        jr nz,sub_819eh         ;81a4   20 f8     .
+        jr nz,delay             ;81a4   20 f8     .
         ret                     ;81a6   c9      .
-l81a7h:
+
+        ;; start read of next sector
+find_next_sector:
         ex af,af'               ;81a7   08      .
+        ;; wait sector mark
 l81a8h:
         in a,(rdst1)            ;81a8   db e0   . .
         and 040h                ;81aa   e6 40   . @
         jr nz,l81a8h            ;81ac   20 fa     .
+        ;; wait sector mark done
 l81aeh:
         in a,(rdst1)            ;81ae   db e0   . .
         and 040h                ;81b0   e6 40   . @
         jr z,l81aeh             ;81b2   28 fa   ( .
+        ;; wait a bit
         ld a,064h               ;81b4   3e 64   > d
-time64:
+wait64:
         dec a                   ;81b6   3d      =
-        jr nz,time64            ;81b7   20 fd     .
+        jr nz,wait64            ;81b7   20 fd     .
+        ;; begin acquire, keep motors on
         ld a,015h               ;81b9   3e 15   > .
         out (ldioctl),a         ;81bb   d3 f8   . .
+        ;; start sector read
         out (flpdskrd),a        ;81bd   d3 82   . .
+        ;; wait a bit more
         ld a,018h               ;81bf   3e 18   > .
-l81c1h:
+wait18:
         dec a                   ;81c1   3d      =
-        jr nz,l81c1h            ;81c2   20 fd     .
+        jr nz,wait18            ;81c2   20 fd     .
+        ;; end acquire, keep motors on
         ld a,01dh               ;81c4   3e 1d   > .
         out (ldioctl),a         ;81c6   d3 f8   . .
+
         ld a,b                  ;81c8   78      x
+
+        ;; read from rdst1 waiting for sector preamble to end
         ld bc,064e0h            ;81c9   01 e0 64        . . d
 l81cch:
-        defb 0edh,070h  ;in f,(c)               ;81cc   ed 70   . p
+        in f,(c)                ;81cc   ed 70
         jp m,l81d6h             ;81ce   fa d6 81        . . .
         djnz l81cch             ;81d1   10 f9   . .
+        ;; no end to preamble after 100 steps...
         jp l811dh               ;81d3   c3 1d 81        . . .
+        ;; end of preamble
 l81d6h:
         ld b,a                  ;81d6   47      G
+        ;; read sync byte
         in a,(flpctl)           ;81d7   db 81   . .
         cp 0fbh                 ;81d9   fe fb   . .
         jp nz,l811dh            ;81db   c2 1d 81        . . .
+        ;; read second sync (sector id)
         in a,(flpdata)          ;81de   db 80   . .
         ld c,000h               ;81e0   0e 00   . .
         jp (hl)                 ;81e2   e9      .
+
 tryserialboot:
         ; ask slot3 if it thinks its a serial card (id f0-f7)
         in a,(idslt3)           ;81e3   db 73   . s
@@ -415,34 +464,45 @@ tryserialboot:
         call getchar            ;81ea   cd 25 83        . % .
         cp 00dh                 ;81ed   fe 0d   . .
         ret nz                  ;81ef   c0      .
-        ;
         ld a,000h               ;81f0   3e 00   > .
-        call sub_8274h          ;81f2   cd 74 82        . t .
+        call serialinit         ;81f2   cd 74 82        . t .
+        ;; hl set to sertable2
+        ;; send 0c 10 16 b7 to 8251 ctl
+        ;; SYN(sync1) DLE(sync2) mode(hunt reset-errors rts)
         ld b,004h               ;81f5   06 04   . .
+        ;; save b, length of block
         ld d,b                  ;81f7   50      P
         otir                    ;81f8   ed b3   . .
+        ;; dummy reads in case this was powerup
         in a,(siodata)          ;81fa   db 30   . 0
         in a,(siodata)          ;81fc   db 30   . 0
-        call sub_8382h          ;81fe   cd 82 83        . . .
+        ;; transmit b (00)
+        call serial_write_char  ;81fe   cd 82 83        . . .
         ld c,b                  ;8201   48      H
-l8202h:
+        ;; bc now 0
+serboot_outer_wait_loop:
         dec bc                  ;8202   0b      .
         ld a,b                  ;8203   78      x
         or c                    ;8204   b1      .
         jr nz,l820bh            ;8205   20 04     .
+        ;; bc now zero again after delay
+        ;; restore progress through sertable3 into a (see 8217)
         ld a,d                  ;8207   7a      z
         cp 003h                 ;8208   fe 03   . .
         ret nc                  ;820a   d0      .
 l820bh:
+        ;; wait for char
         in a,(sioctl)           ;820b   db 31   . 1
         and 002h                ;820d   e6 02   . .
-        jr z,l8202h             ;820f   28 f1   ( .
+        jr z,serboot_outer_wait_loop             ;820f   28 f1   ( .
+        ;; read char
         in a,(siodata)          ;8211   db 30   . 0
+        ;; try to match with message; HL points at sertable3
         cp (hl)                 ;8213   be      .
-        jr nz,l8202h            ;8214   20 ec     .
+        jr nz,serboot_outer_wait_loop            ;8214   20 ec     .
         inc hl                  ;8216   23      #
         dec d                   ;8217   15      .
-        jr nz,l8202h            ;8218   20 e8     .
+        jr nz,serboot_outer_wait_loop            ;8218   20 e8     .
         ld b,d                  ;821a   42      B
 l821bh:
         djnz l821bh             ;821b   10 fe   . .
@@ -451,62 +511,78 @@ l821bh:
         ld c,006h               ;8220   0e 06   . .
 l8222h:
         ld b,(hl)               ;8222   46      F
-        call sub_8382h          ;8223   cd 82 83        . . .
+        call serial_write_char  ;8223   cd 82 83        . . .
         inc hl                  ;8226   23      #
         dec c                   ;8227   0d      .
         jr nz,l8222h            ;8228   20 f8     .
 l822ah:
-        call sub_826bh          ;822a   cd 6b 82        . k .
+        ;; match STX
+        call serial_read_char   ;822a   cd 6b 82        . k .
         cp 002h                 ;822d   fe 02   . .
         jr nz,l822ah            ;822f   20 f9     .
-        call sub_826bh          ;8231   cd 6b 82        . k .
+	;; read first byte of payload, should be page of start
+        call serial_read_char   ;8231   cd 6b 82        . k .
+        ;; set DE requested ram destination addr
         ld d,a                  ;8234   57      W
         ld e,000h               ;8235   1e 00   . .
         ld b,e                  ;8237   43      C
+        ;; put entry point in IX
         ld ix,0000ah            ;8238   dd 21 0a 00     . ! . .
         add ix,de               ;823c   dd 19   . .
+        ;; initialize checksum with 1
         ld hl,00001h            ;823e   21 01 00        ! . .
 l8241h:
+        ;; store byte
         ld (de),a               ;8241   12      .
         inc de                  ;8242   13      .
+        ;; update checksum
         ld c,a                  ;8243   4f      O
         add hl,bc               ;8244   09      .
 l8245h:
-        call sub_826bh          ;8245   cd 6b 82        . k .
+        ;; match SYN
+        call serial_read_char   ;8245   cd 6b 82        . k .
         cp 010h                 ;8248   fe 10   . .
         jr nz,l8241h            ;824a   20 f5     .
-        call sub_826bh          ;824c   cd 6b 82        . k .
+        call serial_read_char   ;824c   cd 6b 82        . k .
         cp 016h                 ;824f   fe 16   . .
         jr z,l8245h             ;8251   28 f2   ( .
         cp 003h                 ;8253   fe 03   . .
         jr nz,l8241h            ;8255   20 ea     .
-        call sub_826bh          ;8257   cd 6b 82        . k .
+        call serial_read_char   ;8257   cd 6b 82        . k .
         cp l                    ;825a   bd      .
         ret nz                  ;825b   c0      .
-        call sub_826bh          ;825c   cd 6b 82        . k .
+        call serial_read_char   ;825c   cd 6b 82        . k .
         cp h                    ;825f   bc      .
         ret nz                  ;8260   c0      .
-        call sub_826bh          ;8261   cd 6b 82        . k .
+        call serial_read_char   ;8261   cd 6b 82        . k .
+        ;; set bank 0 and 1 to point to ram 00000h
         xor a                   ;8264   af      .
         out (memmap0),a         ;8265   d3 a0   . .
         out (memmap1),a         ;8267   d3 a1   . .
+        ;; jump into entry point
         jp (ix)                 ;8269   dd e9   . .
-sub_826bh:
+
+serial_read_char:
+        ;; wait for char
         in a,(sioctl)           ;826b   db 31   . 1
         and 002h                ;826d   e6 02   . .
-        jr z,sub_826bh          ;826f   28 fa   ( .
+        jr z,serial_read_char   ;826f   28 fa   ( .
+        ;; read char
         in a,(siodata)          ;8271   db 30   . 0
         ret                     ;8273   c9      .
-sub_8274h:
-        ld hl,l804fh            ;8274   21 4f 80        ! O .
+
+serialinit:
+        ;; send 80 80 40 to 8251 ctl to reset it
+        ld hl,sertable          ;8274   21 4f 80        ! O .
         ld bc,00331h            ;8277   01 31 03        . 1 .
         otir                    ;827a   ed b3   . .
-l827ch:
-        djnz l827ch             ;827c   10 fe   . .
+        ;; delay and set b := 0
+delayb0:
+        djnz delayb0            ;827c   10 fe   . .
         out (siobaud),a         ;827e   d3 38   . 8
         ret                     ;8280   c9      .
 sub_8281h:
-        ld a,(unk2)           ;8281   3a fd 02        : . .
+        ld a,(serialfound)      ;8281   3a fd 02        : . .
         or a                    ;8284   b7      .
         ret nz                  ;8285   c0      .
         jr l822ah               ;8286   18 a2   . .
@@ -537,7 +613,6 @@ sub_82b3h:
         jp nz,dispchar          ;82ba   c2 6c 83        . l .
 sub_82bdh:
         exx                     ;82bd   d9      .
-
         ; clear visible video memory
         xor a                   ;82be   af      .
         ld h,04fh               ;82bf   26 4f   & O
@@ -604,36 +679,38 @@ minimoncmdi:
         in b,(c)                ;831e   ed 40   . @
         call sub_83d3h          ;8320   cd d3 83        . . .
         jr l82abh               ;8323   18 86   . .
+
+        ;; get a character from keyboard or serial port 3
 getchar:
-        ld a,(unk2)           ;8325   3a fd 02        : . .
+        ld a,(serialfound)      ;8325   3a fd 02        : . .
         or a                    ;8328   b7      .
         jr z,l838ch             ;8329   28 61   ( a
 l832bh:
-        in a,(rdst2)             ;832b   db d0   . .
+        in a,(rdst2)            ;832b   db d0   . .
         bit 6,a                 ;832d   cb 77   . w
         jr z,l832bh             ;832f   28 fa   ( .
         ld b,a                  ;8331   47      G
         ld a,019h               ;8332   3e 19   > .
-        out (ldioctl),a            ;8334   d3 f8   . .
+        out (ldioctl),a         ;8334   d3 f8   . .
 l8336h:
-        in a,(rdst2)             ;8336   db d0   . .
+        in a,(rdst2)            ;8336   db d0   . .
         xor b                   ;8338   a8      .
         jp p,l8336h             ;8339   f2 36 83        . 6 .
-        in a,(rdst2)             ;833c   db d0   . .
+        in a,(rdst2)            ;833c   db d0   . .
         and 00fh                ;833e   e6 0f   . .
         ld c,a                  ;8340   4f      O
         ld a,01ah               ;8341   3e 1a   > .
-        out (ldioctl),a            ;8343   d3 f8   . .
+        out (ldioctl),a         ;8343   d3 f8   . .
 l8345h:
-        in a,(rdst2)             ;8345   db d0   . .
+        in a,(rdst2)            ;8345   db d0   . .
         xor b                   ;8347   a8      .
         jp m,l8345h             ;8348   fa 45 83        . E .
-        in a,(rdst2)             ;834b   db d0   . .
-        add a,a                         ;834d   87      .
-        add a,a                         ;834e   87      .
-        add a,a                         ;834f   87      .
-        add a,a                         ;8350   87      .
-        add a,c                         ;8351   81      .
+        in a,(rdst2)            ;834b   db d0   . .
+        add a,a                 ;834d   87      .
+        add a,a                 ;834e   87      .
+        add a,a                 ;834f   87      .
+        add a,a                 ;8350   87      .
+        add a,c                 ;8351   81      .
         ld bc,018f8h            ;8352   01 f8 18        . . .
         out (c),b               ;8355   ed 41   . A
 l8357h:
@@ -658,20 +735,25 @@ dispchar:
         jp startvideo           ;8378   c3 83 84        . . .
 videoreturn:
         exx                     ;837b   d9      .
-        ld a,(unk2)             ;837c   3a fd 02        : . .
+        ld a,(serialfound)      ;837c   3a fd 02        : . .
         or a                    ;837f   b7      .
         ld a,b                  ;8380   78      x
         ret nz                  ;8381   c0      .
-sub_8382h:
+
+serial_write_char:
+        ;; wait for TxRDY
         in a,(sioctl)           ;8382   db 31   . 1
         and 001h                ;8384   e6 01   . .
-        jr z,sub_8382h          ;8386   28 fa   ( .
+        jr z,serial_write_char  ;8386   28 fa   ( .
+        ;; transmit b
         ld a,b                  ;8388   78      x
         out (siodata),a         ;8389   d3 30   . 0
         ret                     ;838b   c9      .
+
 l838ch:
-        call sub_826bh          ;838c   cd 6b 82        . k .
+        call serial_read_char   ;838c   cd 6b 82        . k .
         jr l8366h               ;838f   18 d5   . .
+
 gethexword:
         call getchar            ;8391   cd 25 83        . % .
         ld l,a                  ;8394   6f      o
