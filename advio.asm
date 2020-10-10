@@ -5,10 +5,10 @@ ldioctl:equ     0f8h           ; same as 0f0h, a0-a3 ignored
 rdst1:  equ     0e0h
 rdst2:  equ     0d0h
 
-ionorm: equ    018h
+ionorm: equ     018h
 
 ;see table 3-4 on page 3-6
-memparity:equ    060h
+memparity:equ   060h
 
 ;see table 3-2 on page 3-4 and 3-3 on 3-5
 memmap0:equ     0a0h
