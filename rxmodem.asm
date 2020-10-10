@@ -76,6 +76,7 @@ entry:  jp      start
 start:  di
         ld      sp,stacktop
         push    hl
+        call    initvar
 
         ;; write message
         ld      ix,vidblock
@@ -118,7 +119,7 @@ start:  di
 kbdmi:  ld      c,09bh          ; remove blanking, enable vid int, keyboard mi
         call    iocmd
         in      a,(rdst2)
-        and     a,001h          ; yeah, redo to flip it back;
+        and     001h          ; yeah, redo to flip it back
                                 ; on boot it's disabled so this is faster
         jr      z,kbdmi
 
@@ -531,42 +532,34 @@ intincdone:
         ei
         reti
 
+        ;; rommable copy of initial vidblock
+initvb:
+        db      0, 0
+        dw      08561h
+        db      0, 0
+        dw      viddest
+        dw      vcursor
+        db      0
+        ds      10, 0ffh
+initvb_end:
+
 initvar:
+        ;; zero trailing ram
         xor     a
         ld      hl,endrom
         ld      (hl),a
-        ld      d,h
-        ld      e,l
-        inc     hl
+        ld      de,endrom+1
         ld      bc,0ffffh-endrom
         ldir
+
+        ;; set up the vidblock
         ld      ix,vidblock
-        ld      hl,vfont
-        ld      a,romfont&0ffh
-        ld      (hl),a
-        inc     hl
-        ld      a,romfont>>8
-        ld      (hl),a
-        ld      hl,vret
-        ld      a,viddest&0ffh
-        ld      (hl),a
-        inc     hl
-        ld      a,viddest>>8
-        ld      (hl),a
-        inc     hl
-        ld      a,vcursor&0ffh
-        ld      (hl),a
-        inc     hl
-        ld      a,vcursor>>8
-        ld      (hl),a
-        ld      a,0ffh
-        ld      hl,vcursor
-        ld      (hl),a
-        ld      d,h
-        ld      e,l
-        inc     de
-        ld      bc,9
+        ld      de,vidblock
+        ld      hl,initvb
+        ld      bc,initvb_end-initvb
         ldir
+
+        ;; leave all other vars zeroed
         ret
 
 include 'crc16.asm'
@@ -654,23 +647,23 @@ monser:
 endrom:
 
 vidblock:
-        rsv     vx 1
-        rsv     vy 1
-        rsv     vfont 2
-        rsv     vscrl 1
-        rsv     vstat 1
-        rsv     vret 2
-        rsv     vctemp 2
-        rsv     vinv 1
-        rsv     vcursor 10
+        rsv     vx 1            ; cursor column
+        rsv     vy 1            ; cursor pixel row
+        rsv     vfont 2         ; 08561h rom font
+        rsv     vscrl 1         ; initial scroll count 0
+        rsv     vstat 1         ; status
+        rsv     vret 2          ; vidreturn address
+        rsv     vctemp 2        ; cursor template address
+        rsv     vinv 1          ; inverse flag
+        rsv     vcursor 10      ; cursor template (0ffh x 10)
         rsv     intcount 4
         rsv     dladdr 2
         rsv     pkidx 1
         rsv     pktpos 1
         rsv     pknak 2
 
-        org     $|0ffh
-        rsv     intvec 2
-        rsv     pkt 133
+        org     $|0ffh          ; skip to end-of-page for IDT
+        rsv     intvec 2        ; all (maskable) interrupts vector
+        rsv     pkt 133         ; buffer for xmodem-crc packet
 endram:
         end
