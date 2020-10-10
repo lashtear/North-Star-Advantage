@@ -7,7 +7,7 @@ hexes = rxmodem.hex
 targets = $(bins) $(hexes) Advantage\ Boot\ Font.png
 extras = $(sources:.asm=.list) $(sources:.asm=.label)
 
-all: $(targets) check
+all: $(targets)
 
 .PHONY: all clean check
 

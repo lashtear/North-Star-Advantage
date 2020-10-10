@@ -60,30 +60,27 @@ baud1:  equ     128-(307200/baudrate)
 baud16: equ     128-(19200/baudrate)
 baud64: equ     128-(4800/baudrate)
 
-stacktop:equ    0fffeh
-sentry: equ     0c00ah
-        org     0c000h
-sstart:
-        db      $>>8
+stacktop:equ    0               ; 010000h but this is 16bit...
 
-vidcall:
-        jp      romcout
-viddest:
-        ret
+        org     0c000h
+sentry: equ     $+10
+sstart:
+        db      $>>8            ; floppy bootsect style startbyte
 
         ds      sentry-$,0
-entry:  jp      start
+entry:  jp      start           ; floppy bootsect mandatory jp
 start:  di
         ld      sp,stacktop
         push    hl
         call    initvar
 
         ;; write message
-        ld      ix,vidblock
+        ld      hl,vidmap       ; must be vidmap'd before putstr
+        call    runioseq
         ld      hl,strinit
         call    putstr
-        ld      hl,vidmap
-        call    runioseq
+        in      a,(flpbeep)
+        call    kbdgetch
 
         ;; relocate if needed
         ld      a,3
@@ -92,7 +89,9 @@ start:  di
         ld      de,0
         ld      bc,04000h
         ldir
-        ld      hl,flatmap
+        out     (memmap3),a     ; our stack is in mmap3 so we can't
+                                ; call a runioseq that changes it
+        ld      hl,flatmap      ; now we can!
         call    runioseq
 
         ;; wipe low ram
@@ -381,7 +380,8 @@ putstr:
         cp      0
         jr      z,.putstrout
         push    hl
-        call    vidcall
+        jp      romcout
+viddest:
         pop     hl
         inc     hl
         jr      .psloop
@@ -440,7 +440,7 @@ kbdint:
         push    hl
         call    serputstr
         pop     hl
-        jp      abort
+        jr      abort           ; for stack record, does not return
 .kbderr:
         ;; they hit something, but it wasn't control-c
         ;; so make a ruckus and then continue
@@ -464,21 +464,23 @@ dispint:
 nmiint:
         out     (clearnmi),a
         ld      hl,nmimsg
-        jp      abort
+        jr      abort           ; for stack record, does not return
 
 memint:
         ld      hl,paritymsg
-        jp      abort
+        jr      abort           ; for stack record, does not return
 
         ;; message in HL
 abort:
+        di                      ; should already be the case, but...
         push    hl
         ld      hl,vidmap
         call    runioseq
         pop     hl
+        push    hl              ; leave it on the stack for debugging
         call    putstr
-        ld      c,028h
-        call    iocmd
+;;        ld      c,028h this hangs, strangely
+;;        call    iocmd
         ld      c,018h
         call    iocmd
         xor     a
@@ -488,7 +490,7 @@ abort:
         ld      a,(ix+1)
         ld      (000f1h),a
         xor     a
-        ld      (002fdh),a      ; stop debug flag so minimon uses serial
+        ld      (002fdh),a      ; stomp debug flag so minimon uses serial
         ld      a,(flpbeep)
         jp      082abh          ; hard jump to minimon return point
 
@@ -540,7 +542,7 @@ initvar:
         ld      hl,endrom
         ld      (hl),a
         ld      de,endrom+1
-        ld      bc,0ffffh-endrom
+        ld      bc,0ffffh-endrom-4 ; two stack items
         ldir
 
         ;; set up the vidblock
