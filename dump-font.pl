@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 sub get_data {
-    open my $f, '<', 'Advantage Boot Rom.BIN' or die "open: boot rom: $!\n";
+    open my $f, '<', 'Advantage Boot Rom.bin' or die "open: boot rom: $!\n";
     binmode $f;
     local $/;
     seek $f, 0x561, 0;
@@ -53,7 +53,7 @@ sub emit_bitmap {
         my $chardata = substr $data, 7*$char, 7;
         my $first = ord substr $chardata, 0, 1;
         my $y_offset = 0 + (($first & 0x80) > 0) + (($first & 0x40) > 0);
-        printf "%08b %d\n", $first, $y_offset;
+#        printf "%08b %d\n", $first, $y_offset;
         my $char_offset = $char % 16 + 16*9*($char >> 4);
         $char_offset += 16 * $y_offset;;
         $bm[$char_offset] = $first & 0x3f;

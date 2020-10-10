@@ -80,10 +80,10 @@ start:  di
 
         ;; write message
         ld      ix,vidblock
-        ld      hl,vidmap
-        call    runioseq
         ld      hl,strinit
         call    putstr
+        ld      hl,vidmap
+        call    runioseq
 
         ;; relocate if needed
         ld      a,3
@@ -119,8 +119,9 @@ start:  di
 kbdmi:  ld      c,09bh          ; remove blanking, enable vid int, keyboard mi
         call    iocmd
         in      a,(rdst2)
-        and     001h          ; yeah, redo to flip it back
-                                ; on boot it's disabled so this is faster
+        and     001h            ; yeah, redo to flip it back
+                                ; on boot/reset it's disabled so
+                                ; this is faster
         jr      z,kbdmi
 
         ld      c,098h          ; normal run + video interrupt
@@ -325,26 +326,26 @@ kbdgetcha:
 runioseq:
         push    bc
         push    af
-runioloop:
+.runioloop:
         ld      a,(hl)
         inc     hl
         cp      0
-        jr      z,runiodone
+        jr      z,.runiodone
         cp      0ffh
-        jr      z,riodelay
+        jr      z,.riodelay
         ld      b,a
         ld      c,(hl)
         inc     hl
         otir
-        jr      runioseq
-riodelay:
+        jr      .runioloop
+.riodelay:
         ld      c,(hl)
         inc     hl
         ld      b,(hl)
         inc     hl
         call    delay
-        jr      runioseq
-runiodone:
+        jr      .runioloop
+.runiodone:
         pop     af
         pop     bc
         ret
@@ -358,10 +359,10 @@ iocmd:
         ld      b,a
         ld      a,c
         out     (ldioctl),a
-iocloop:
+.iocloop:
         in      a,(rdst2)
         xor     b
-        jp      p,iocloop
+        jp      p,.iocloop
         pop     af
         pop     bc
         ret
@@ -375,8 +376,9 @@ putstr:
         push    de
         push    af
         push    iy
-.psloop: ld      a,(hl)
-        cp      000h
+.psloop:
+        ld      a,(hl)
+        cp      0
         jr      z,.putstrout
         push    hl
         call    vidcall
@@ -399,7 +401,7 @@ serputstr:
 .spsloop:
         ld      a,(hl)
         inc     hl
-        cp      000h
+        cp      0
         jr      z,.serputstrout
         ld      c,a
 .spswait:
@@ -429,27 +431,27 @@ kbdint:
         push    af
         in      a,(rdst2)
         bit     6,a
-        jr      z,kbdintout
+        jr      z,.kbdintout
         call    kbdgetcha
-        cp      003h            ; control-c?
-        jr      nz,kbderr
+        cp      003h            ; is it control-c?
+        jr      nz,.kbderr
         ;; they hit ctrl-c!
         ld      hl,ctrlcmsg
         push    hl
         call    serputstr
         pop     hl
         jp      abort
-kbderr:
+.kbderr:
         ;; they hit something, but it wasn't control-c
         ;; so make a ruckus and then continue
         in      a,(flpbeep)
-kbdintout:
+.kbdintout:
         pop     af
         ret
 
 ioint:
-        push    af
-        pop     af
+;        push    af
+;        pop     af
         ret
 
 dispint:
@@ -500,16 +502,16 @@ inthandler:
         ;; maintain 32bit interrupt count
         ld      hl,intcount
         inc     (hl)
-        jr      nz,intincdone
+        jr      nz,.intincdone
         inc     hl
         inc     (hl)
-        jr      nz,intincdone
+        jr      nz,.intincdone
         inc     hl
         inc     (hl)
-        jr      nz,intincdone
+        jr      nz,.intincdone
         inc     hl
         inc     (hl)
-intincdone:
+.intincdone:
 
         ;; call handlers as needed
         in      a,(rdst1)
@@ -531,17 +533,6 @@ intincdone:
         pop     bc
         ei
         reti
-
-        ;; rommable copy of initial vidblock
-initvb:
-        db      0, 0
-        dw      08561h
-        db      0, 0
-        dw      viddest
-        dw      vcursor
-        db      0
-        ds      10, 0ffh
-initvb_end:
 
 initvar:
         ;; zero trailing ram
@@ -644,6 +635,21 @@ monser:
         db      1, pinmsk, 0
         db      0
 
+        ;; rommable copy of initial vidblock
+initvb:
+        db      0, 0
+        dw      08561h
+        db      0, 0
+        dw      viddest
+        dw      vcursor
+        db      0
+initvb_end:
+vcursor:
+        ;; hollow box cursor!
+        db      0ffh
+        ds      8, 081h
+        db      0ffh
+
 endrom:
 
 vidblock:
@@ -655,7 +661,6 @@ vidblock:
         rsv     vret 2          ; vidreturn address
         rsv     vctemp 2        ; cursor template address
         rsv     vinv 1          ; inverse flag
-        rsv     vcursor 10      ; cursor template (0ffh x 10)
         rsv     intcount 4
         rsv     dladdr 2
         rsv     pkidx 1

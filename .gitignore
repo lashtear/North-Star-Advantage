@@ -1,2 +1,6 @@
 *~
 /Advantage Boot Font.pbm
+*.dep
+*.list
+*.label
+*.hex
